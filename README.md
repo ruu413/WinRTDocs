@@ -118,3 +118,158 @@ reader.ReadBytes(arr);
 //readerの内容を配列に読み出す。
                     
 ~~~
+
+### WinRT型について
+WinRT内のクラスは全てWindows::Foundation::IInspectableを継承したクラスとして扱われる。基本的にXAMLから呼び出したりXamlコントロールのソースとする場合などはWinRT型のクラスとする必要がある。WinRT型にするには.idlの拡張子のMIDLでインターフェースを定義する、
+
+MainPage.idl
+~~~
+namespace ZBatch
+{
+    runtimeclass ExplorerItemTemplateSelector : Windows.UI.Xaml.Controls.DataTemplateSelector
+    //C++likeにクラスを継承できる。ここで継承できるのはWinRT型
+    //::ではなく.で名前空間を指定する
+    {
+        ExplorerItemTemplateSelector();
+        //コンストラクタ　引数なしのみしか置けない？
+        Windows.UI.Xaml.DataTemplate SelectTemplateCore(IInspectable item, Windows.UI.Xaml.DependencyObject dp);
+        Windows.UI.Xaml.DataTemplate SelectTemplateCore(IInspectable item);
+        //メンバ関数の定義
+        Windows.UI.Xaml.DataTemplate FileTemplate;
+        Windows.UI.Xaml.DataTemplate FolderTemplate;
+        //メンバ変数の定義　実際はGetterとSetterが用意される
+    }
+}
+~~~
+これをビルドするとGenerated Files/sources/以下にクラス名に対応した.cppと.hファイルが生成される、
+
+Generated Files/sources/ExplorerItemSelector.h
+~~~
+#pragma once
+#include "ExplorerItemTemplateSelector.g.h"
+
+// Note: Remove this static_assert after copying these generated source files to your project.
+// This assertion exists to avoid compiling these generated source files directly.
+static_assert(false, "Do not compile generated C++/WinRT source files directly");
+
+namespace winrt::ZBatch::implementation
+{
+    struct ExplorerItemTemplateSelector : ExplorerItemTemplateSelectorT<ExplorerItemTemplateSelector>
+    {
+        ExplorerItemTemplateSelector() = default;
+
+        Windows::UI::Xaml::DataTemplate SelectTemplateCore(Windows::Foundation::IInspectable const& item, Windows::UI::Xaml::DependencyObject const& dp);
+        Windows::UI::Xaml::DataTemplate SelectTemplateCore(Windows::Foundation::IInspectable const& item);
+        Windows::UI::Xaml::DataTemplate FileTemplate();
+        void FileTemplate(Windows::UI::Xaml::DataTemplate const& value);
+        Windows::UI::Xaml::DataTemplate FolderTemplate();
+        void FolderTemplate(Windows::UI::Xaml::DataTemplate const& value);
+    };
+}
+namespace winrt::ZBatch::factory_implementation
+{
+    struct ExplorerItemTemplateSelector : ExplorerItemTemplateSelectorT<ExplorerItemTemplateSelector, implementation::ExplorerItemTemplateSelector>
+    {
+    };
+}
+
+~~~
+
+Generated Files/sources/ExplorerItemSelector.cpp
+~~~
+#include "pch.h"
+#include "ExplorerItemTemplateSelector.h"
+#include "ExplorerItemTemplateSelector.g.cpp"
+
+// Note: Remove this static_assert after copying these generated source files to your project.
+// This assertion exists to avoid compiling these generated source files directly.
+static_assert(false, "Do not compile generated C++/WinRT source files directly");
+
+namespace winrt::ZBatch::implementation
+{
+    Windows::UI::Xaml::DataTemplate ExplorerItemTemplateSelector::SelectTemplateCore(Windows::Foundation::IInspectable const& item, Windows::UI::Xaml::DependencyObject const& dp)
+    {
+        throw hresult_not_implemented();
+    }
+    Windows::UI::Xaml::DataTemplate ExplorerItemTemplateSelector::SelectTemplateCore(Windows::Foundation::IInspectable const& item)
+    {
+        throw hresult_not_implemented();
+    }
+    Windows::UI::Xaml::DataTemplate ExplorerItemTemplateSelector::FileTemplate()
+    {
+        throw hresult_not_implemented();
+    }
+    void ExplorerItemTemplateSelector::FileTemplate(Windows::UI::Xaml::DataTemplate const& value)
+    {
+        throw hresult_not_implemented();
+    }
+    Windows::UI::Xaml::DataTemplate ExplorerItemTemplateSelector::FolderTemplate()
+    {
+        throw hresult_not_implemented();
+    }
+    void ExplorerItemTemplateSelector::FolderTemplate(Windows::UI::Xaml::DataTemplate const& value)
+    {
+        throw hresult_not_implemented();
+    }
+}
+
+~~~
+
+その後プロジェクトに新規ファイルとしてクラスを追加後、生成されたファイルからコピペする。
+
+実装は全て未実装なので自分で実装する。また、MIDLに書いたインスタンス変数は実体はGetterとSetterなのでヘッダファイルにメンバ変数として定義する。ファイル先頭のstatic_assert(false, "Do not compile generated C++/WinRT source files directly");は消去する。
+
+### TreeViewについて
+ツリー表示させるTreeViewについて
+自分でノードを構築する方法とデータソースからノードを作成させる2種類の方法がある。
+
+自分でノードを構築する場合は次のようになる
+~~~
+
+            <TreeView Name="treeView">
+                <TreeView.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Content}"/>
+                    </DataTemplate>
+                </TreeView.ItemTemplate>
+                <TreeView.RootNodes>
+                    <TreeViewNode Content="a">
+                        <TreeViewNode.Children>
+                            <TreeViewNode Content="aaa"/>
+                            <TreeViewNode Content="abb"/>
+                        </TreeViewNode.Children>
+                    </TreeViewNode>
+                    <TreeViewNode Content="b">
+                        <TreeViewNode.Children>
+                            <TreeViewNode Content="bbb"/>
+                        </TreeViewNode.Children>
+                    </TreeViewNode>
+                </TreeView.RootNodes>
+            </TreeView>
+~~~
+TreeView.RootNodesの内部にTreeViewNodeを入れ子状入れていく。TreeView.RootNodesやTreeViewNode.ChildrenはIVector<TreeViewNode>なのでTreeViewNode以外を入れることはできない。実際に表示する内容についてはTreeViewNode.Contentの内部に入れる。ContentはIInspectableなのでWinRT型の好きな値が入る。表示はTreeView.ItemTemplateに指定したDataTemplateを用いて表示される。何も指定しない場合to_stringが呼ばれ既定だとクラス名が表示される。
+
+動的に要素を追加するときは次の通り
+
+~~~
+TreeViewNode a,b;
+a.Content(L"a");
+b.Content(L"b");
+treeView().RootNodes().Append(a);
+a.Children().Append(b);
+//treeView()のNameを持つTreeViewが既に配置されている仮定
+~~~
+
+### WinRTのコンテナ型について
+Windows::Foundation::Collections名前空間の中にいくつかの種類のコンテナが存在する。それぞれの初期化方法は次のようになる。
+https://docs.microsoft.com/ja-jp/windows/uwp/cpp-and-winrt-apis/collections
+~~~
+
+Windows::Foundation::Collections::IVector<hstring> a{ single_threaded_vector<hstring>() };
+Windows::Foundation::Collections::IMap<int, hstring> a{ single_threaded_map<int,hstring>() };
+//KEY,VALUEのペアの型を指定する
+Windows::Foundation::Collections::IObservableVector<hstring> a{ single_threaded_observable_vector<IInspectable>() };
+Windows::Foundation::Collections::IObservableMap<int, IInspectable> a{ single_threaded_obserbalemap<int,IInspectalbe>() };
+~~~
+
+INotifyPropertyChangedを継承したクラスの実装
