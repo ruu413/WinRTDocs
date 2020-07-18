@@ -9,6 +9,8 @@ VC++17環境だとintelliSenseがエラーを起こすのでnullptr;を置き換
 #define co_await nullptr;
 #endif
 ~~~
+バグが治ったらしくintellisenseは普通に動くようになった。
+
 
 ~~~
 using namespace winrt;
@@ -260,6 +262,127 @@ a.Children().Append(b);
 //treeView()のNameを持つTreeViewが既に配置されている仮定
 ~~~
 
+
+データソースから構築する場合
+再帰的なデータクラスが必要となるので礼としてフォルダー構造を持ったExplorerItemを定義する　UI側で使うのでWinRTクラスとして定義
+
+MainPage.idl
+~~~
+namespace WRTApp
+{
+    runtimeclass ExplorerItem : Windows.UI.Xaml.Data.INotifyPropertyChanged
+    {
+        ExplorerItem();
+        Windows.Storage.IStorageItem Item;
+        Boolean IsSelected;
+        String Name{ get;  };
+        Windows.Foundation.Collections.IObservableVector<WRTApp.ExplorerItem> Children;
+    }
+}
+~~~
+
+データテンプレートをいくつか保持し、データによって使うテンプレートを切り替える
+テンプレートセレクタを作成
+MainPage.idl
+~~~
+
+namespace WRTApp
+{
+    runtimeclass ExplorerItemTemplateSelector : Windows.UI.Xaml.Controls.DataTemplateSelector
+    {
+        ExplorerItemTemplateSelector();
+        Windows.UI.Xaml.DataTemplate SelectTemplateCore(IInspectable item, Windows.UI.Xaml.DependencyObject dp);
+        Windows.UI.Xaml.DataTemplate SelectTemplateCore(IInspectable item);
+        Windows.UI.Xaml.DataTemplate FileTemplate;
+        Windows.UI.Xaml.DataTemplate FolderTemplate;
+    }
+}
+~~~
+テンプレートセレクタではデータテンプレートを保持する変数、
+テンプレートを切り替える関数SelectTEmplateCoreを保持し、この場合ファイルとフォルダでテンプレートを切り替える
+ExplorerItemTemplateSelector.cpp
+~~~
+    Windows::UI::Xaml::DataTemplate ExplorerItemTemplateSelector::SelectTemplateCore(Windows::Foundation::IInspectable const& item)
+    {
+        ExplorerItem ei = item.try_as<ExplorerItem>();
+        if (ei == nullptr) {
+            return nullptr;
+        }
+        if (ei.Item().try_as<IStorageFile>() != nullptr) {
+            return m_FileTemplate;
+        }
+        if (ei.Item().try_as<IStorageFolder>() != nullptr) {
+            return m_FolderTemplate;
+        }
+        return nullptr;
+    }
+
+~~~
+実際のデータテンプレートはxaml上に定義(おそらくコードとしても定義できる)
+
+MainPage.xaml
+~~~
+<Page.Resources>
+    <DataTemplate x:Key="FolderTemplate" x:DataType="local:ExplorerItem">
+         <TreeViewItem 
+            ItemsSource="{x:Bind Children, Mode=TwoWay}" 
+               
+            HasUnrealizedChildren="True" 
+            IsExpanded="{x:Bind IsExpanded, Mode=TwoWay}"
+            IsSelected="{x:Bind IsSelected, Mode=TwoWay}"
+            
+            >
+            <StackPanel Orientation="Horizontal">                    <!--Image Width="20" Source="Assets/folder.png"/-->
+                <TextBlock Text="{x:Bind Name}" />
+            </StackPanel>
+        </TreeViewItem>
+    </DataTemplate>
+
+    <DataTemplate x:Key="FileTemplate" x:DataType="local:ExplorerItem">
+        <TreeViewItem
+            HasUnrealizedChildren="False" 
+            IsExpanded="{x:Bind IsExpanded, Mode=TwoWay}"
+            IsSelected="{x:Bind IsSelected, Mode=TwoWay}">
+            <StackPanel Orientation="Horizontal">
+                <!--Image Width="20" Source="Assets/file.png"/-->
+                <TextBlock Text="{x:Bind Name}"/>
+            </StackPanel>
+        </TreeViewItem>
+    </DataTemplate>
+
+    <local:ExplorerItemTemplateSelector
+        x:Key="ExplorerItemTemplateSelector"
+        FolderTemplate="{StaticResource FolderTemplate}"
+        FileTemplate="{StaticResource FileTemplate}" />
+</Page.Resources>
+~~~
+テンプレートセレクタにFolderTemplateとFileTemplateを渡し、データに合ったテンプレートを使うようにする
+
+TreeViewがテンプレートセレクタを保持することで階層的なデータ構造から適切なテンプレートを用いてTreeViewを生成できるようになる
+~~~
+<TreeView Name="explorerTree"
+    SelectionMode="Single"
+    CanReorderItems="False"
+    ItemTemplateSelector="{StaticResource ExplorerItemTemplateSelector}"
+    />
+~~~
+
+データソースはC++側からも渡すことができる
+MainPage.cpp
+~~~
+StorageFolder folder = co_await picker.PickSingleFolderAsync();        
+WinRTApp::ExplorerItem item;
+item.Item(folder);
+//フォルダを取ってExplorerITemに渡す
+
+Collections::IObservableVector<IInspectable> vector{ winrt::single_threaded_observable_vector<IInspectable>() };
+vector.Append(item);
+//ExplorerItemをコンテナ型にセット
+explorerTree().ItemsSource(vector);
+//ItemsSourceを設定
+
+~~~
+
 ### WinRTのコンテナ型について
 Windows::Foundation::Collections名前空間の中にいくつかの種類のコンテナが存在する。それぞれの初期化方法は次のようになる。
 https://docs.microsoft.com/ja-jp/windows/uwp/cpp-and-winrt-apis/collections
@@ -269,7 +392,409 @@ Windows::Foundation::Collections::IVector<hstring> a{ single_threaded_vector<hst
 Windows::Foundation::Collections::IMap<int, hstring> a{ single_threaded_map<int,hstring>() };
 //KEY,VALUEのペアの型を指定する
 Windows::Foundation::Collections::IObservableVector<hstring> a{ single_threaded_observable_vector<IInspectable>() };
-Windows::Foundation::Collections::IObservableMap<int, IInspectable> a{ single_threaded_obserbalemap<int,IInspectalbe>() };
+Windows::Foundation::Collections::IObservableMap<int, IInspectable> a{ single_threaded_obserbablemap<int,IInspectable>() };
 ~~~
 
-INotifyPropertyChangedを継承したクラスの実装
+### INotifyPropertyChangedを継承したクラスの実装
+UI側でIObservableVector内の要素が変更されたことをコード側で検知するときはINotifyPropertyChangedを継承したクラスでイベントを発生させる必要がある
+https://docs.microsoft.com/ja-jp/windows/uwp/cpp-and-winrt-apis/binding-collection
+UI側で要素を使いたいのでWinRT型としてクラスを定義する
+変更を検知したいプロパティはIsSelectedとしておく
+MainPage.idl
+~~~
+namespace WinRTApp
+{
+    runtimeclass ExplorerItem : Windows.UI.Xaml.Data.INotifyPropertyChanged
+    {
+        Boolean IsSelected;
+    }
+    
+}
+~~~
+その中でPropertyChangedのsetter,getterを定義することで実際に使用できる
+また、インスタンス変数にイベントを持っておく
+ExplorerItem.h
+~~~
+namespace winrt::WinRTApp::implementation
+{
+    struct ExplorerItem : ExplorerItemT<ExplorerItem>
+    {
+        winrt::event_token PropertyChanged(Windows::UI::Xaml::Data::PropertyChangedEventHandler const& handler);
+        void PropertyChanged(winrt::event_token const& token) noexcept;
+
+        void IsSelected(bool value);
+        bool IsSelected();
+        bool m_IsSelected;
+        
+        winrt::event<winrt::Windows::UI::Xaml::Data::PropertyChangedEventHandler> m_PropertyChanged;
+        //イベント用変数を持っておく  
+    }
+}
+~~~
+
+ExplorerItem.cpp
+~~~
+namespace winrt::WRTApp::implementation
+{
+	winrt::event_token ExplorerItem::PropertyChanged(Windows::UI::Xaml::Data::PropertyChangedEventHandler const& handler)
+	{
+		return m_PropertyChanged.add(handler);
+	}
+	void ExplorerItem::PropertyChanged(winrt::event_token const& token) noexcept
+	{
+		m_PropertyChanged.remove(token);
+	}
+
+    
+	bool ExplorerItem::IsSelected()
+	{
+		return m_IsSelected;
+	}
+	void ExplorerItem::IsSelected(bool value)
+	{
+		if (value == m_IsSelected) {
+			return;
+		}
+		m_IsSelected = value;
+		m_PropertyChanged(*this->get_strong(), Windows::UI::Xaml::Data::PropertyChangedEventArgs(L"IsSelected"));
+
+	}
+}
+~~~
+観測している変数が実際に変化した場合にのみイベントを発生させる
+イベントを発生させるときは自らのポインタと何らかのIInspectableオブジェクトを
+EventArgsに包んで渡すことができる
+
+MainPage.xaml
+~~~
+<TreeViewItem 
+    IsSelected="{x:Bind IsSelected, Mode=TwoWay}"
+    >
+~~~
+TwoWayモードでバインドすることでC++側/UI側の両方からの情報が反映されるようになる
+
+### ONNXモデルの実行(深層学習の学習済みモデルを使う)
+用いるモデルは(10,128)のノイズを受け取り(10,3,64,64)の画像を出力するGANの学習済みモデルとする
+https://docs.microsoft.com/ja-jp/windows/ai/windows-ml/get-started-desktop
+~~~
+StorageFile file = co_await picker.PickSingleFileAsync();
+#onnxファイルを読み込み
+auto model = co_await Windows::AI::MachineLearning::LearningModel::LoadFromStorageFileAsync(file);
+//モデルはStorageFileのインスタンスから読み込み
+
+LearningModelDevice device{ LearningModelDeviceKind::Default };
+//モデルを実行するデバイス Cpu,Default,DirectX,DirectXMinPower,DirectXHighPerformanceが選べる
+
+LearningModelSession session{ model, device };
+//モデル,デバイスからセッションを構築
+
+
+LearningModelBinding binding{ session };
+//セッションに値をバインディングしていく
+//バインドする値の名前は
+model.InputFeatures.GetAt(0).Name()//->hstring
+model.OutputFeatures.GetAt(0).Name()
+//のようにして取り出せるほかhttps://www.lutzroeder.com/ai/でも確認できる
+
+//入力はGANなのでノイズとする 入力は1次元の配列をShape付きのTensorFloatにする
+std::vector<float> a(10 * 100, 0);
+for (int i = 0; i < 10 * 100; ++i) {
+    a[i] = std::rand()*1.0f/RAND_MAX;
+}
+
+winrt::com_array<float> array(a.begin(), a.end());
+//vectorをcom_arrayに変換
+binding.Bind(L"0", TensorFloat::CreateFromArray({ 10,100,1,1 },array));
+//com_arrayを(10,100,1,1)の入力形状にして入力ノードにバインド
+
+binding.Bind(L"114", TensorFloat::Create({ 10,3,64,64 }));
+//空TensorFloatを出力ノードにセット
+
+auto results = session.Evaluate(binding, L"RunId");
+//実際に処理を実行する
+
+auto resultTensor = results.Outputs().Lookup(L"114").as<TensorFloat>();
+//出力を取り出す
+
+auto resultVector = resultTensor.GetAsVectorView();
+//Windows::Collection::IVectorViewを取り出す
+
+//[-1 1]の(10,3,64,64)の画像の一枚目を[0 255]の(64,64,4)の形で取り出す チャネルにアルファを追加して0埋め
+std::vector<uint8_t> image(64*64*4,0);
+for (int c = 0; c < 3; ++c) {
+    for (int h = 0; h < 64; ++h) {
+        for (int w = 0; w < 64; ++w) {
+            image[h*64*4+w*4+c] = (resultVector.GetAt(c * 64 * 64 + h * 64 + w)*0.5+0.5)*256;
+        }
+    }
+}
+
+//あとはストリームに流し込んで画像表示
+
+Streams::InMemoryRandomAccessStream ras;
+//書き出す対象のストリーム
+Imaging::BitmapEncoder encoder = co_await Imaging::BitmapEncoder::CreateAsync(Imaging::BitmapEncoder::JpegEncoderId(), ras);
+//データ形式､データを吐き出すStreamを指定
+winrt::com_array image_array(image.begin(), image.end());
+encoder.SetPixelData(Imaging::BitmapPixelFormat::Rgba8, Imaging::BitmapAlphaMode::Ignore, 64, 64, 1, 1, array_view<uint8_t const>{image_array.begin(), image_array.end()});
+//ピクセルの形式とともにデータをいれる
+//decoder,pixは上で用いた変数を仮定
+co_await encoder.FlushAsync();
+Windows::UI::Xaml::Media::Imaging::BitmapImage bitmap;
+
+bitmap.SetSource(ras);
+
+myImage().Source(bitmap);
+~~~
+
+### Windows::Graphics::Imaging::SoftwareBitmapをXamlのImageコントロールに直接表示
+
+~~~
+Windows::MediaSoftwareBitmap softwareBitmap;//SoftwareBitmapをどこからか取得
+Windows::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
+//co_await系以外にもUIスレッドで実行する必要があるものがあり、SoftwareBitmapSourceのコンストラクタはUIスレッドでないと例外を吐く
+co_await source.SetBitmapAsync(softwareBitmap);
+//sourceにbitmapを流し込み
+myImage().Source(source);
+//myImageがXamlのImageコントロールと仮定
+~~~
+
+### カメラから画像を取得
+
+
+~~~
+Windows::Media::Capture::MediaCapture mediaCapture;
+auto settings = MediaCaptureInitializationSettings{};
+settings.StreamingCaptureMode(StreamingCaptureMode::Video);
+settings.MemoryPreference(MediaCaptureMemoryPreference::Cpu);
+//CPUにするとVideoフレーム取得時に
+//SoftwareBitmap,他のにするとDirect3DSurfaceが取得できる　取得形式を間違えると画像取得時にnullptr
+
+co_await mediaCapture.InitializeAsync(settings);
+//MediaCaptureを初期化
+
+
+MediaProperties::ImageEncodingProperties property = MediaProperties::ImageEncodingProperties::CreateUncompressed(MediaProperties::MediaPixelFormat::Bgra8);
+Capture::LowLagPhotoCapture capture = co_await mediaCapture.PrepareLowLagPhotoCaptureAsync(property);
+//カメラのキャプチャを用意
+
+auto capturedPhoto = co_await capture.CaptureAsync();
+//実際にカメラから画像を取得する
+auto softwareBitmap = capturedPhoto.Frame().SoftwareBitmap();
+//SoftwareBitmapを取得
+co_await capture.FinishAsync();
+
+
+softwareBitmap = Windows::Graphics::Imaging::SoftwareBitmap::Convert(softwareBitmap, Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8, Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+//表示できる形式に変換
+co_await winrt::resume_foreground(myImage().Dispatcher());
+Windows::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
+//co_await系以外にもUIスレッドで実行する必要があるものがあるらしい
+co_await source.SetBitmapAsync(softwareBitmap);
+co_await winrt::resume_foreground(myImage().Dispatcher());
+myImage().Source(source);
+//表示
+
+//TODO　この方法でのカメラの選び方
+
+~~~
+
+### カメラから連続してフレームを取得
+asyncを使う関数はコルーチンの必要があることは注意点
+~~~
+
+auto settings = MediaCaptureInitializationSettings{};
+settings.StreamingCaptureMode(StreamingCaptureMode::Video);
+settings.MemoryPreference(MediaCaptureMemoryPreference::Cpu);
+co_await mediaCapture.InitializeAsync(settings);
+//ここまでキャプチャと変化なし
+
+auto frameReader = co_await mediaCapture.CreateFrameReaderAsync(mediaCapture.FrameSources().First().Current().Value());
+//使うフレームソースを指定　TODO 一つしかカメラが取り付けられてない場合これでも大丈夫だけどちゃんと指定した方がよい
+
+//フレームリーダーにイベントリスナーをセットしてフレーム毎に処理する
+frameReader.FrameArrived([&](MediaFrameReader sender, MediaFrameArrivedEventArgs args)->IAsyncAction {
+    //ラムダ式もコルーチンで書ける　関数をセットする場合は{this, クラス名::関数名}を引数に
+    auto frameref = sender.TryAcquireLatestFrame();
+    if (frameref == nullptr) {
+        co_return;
+    }
+    auto softwareBitmap = frameref.VideoMediaFrame().SoftwareBitmap();
+    if (softwareBitmap == nullptr) {
+        co_return;
+    }
+    //SoftwareBitmapが取得できたので後は煮るなり焼くなり
+
+
+    //とりあえず毎フレーム表示する
+
+    softwareBitmap = Windows::Graphics::Imaging::SoftwareBitmap::Convert(softwareBitmap, Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8, Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+    
+    co_await winrt::resume_foreground(myImage().Dispatcher());
+    Windows::UI::Xaml::Media::Imaging::SoftwareBitmapSource source;
+    //UIスレッドで実行する必要がある
+
+    co_await source.SetBitmapAsync(softwareBitmap);
+    co_await winrt::resume_foreground(myImage().Dispatcher());
+    myImage().Source(source);
+    co_return;
+});
+frameReader.StartAsync();
+//最後にフレームリーダーを動かしたら動く
+//止めるときは
+frameReader.StopAsync();
+~~~
+
+
+### 並列パターンライブラリppl.h
+#include <ppl.h>で非同期用ライブラリが使える
+https://wrongwrong163377.hatenablog.com/entry/2018/07/02/003000
+openMPよりははやいっぽい　std::futureの内部実装(?)
+WinRT/C++のコルーチンと相性が良いっぽい
+タスクを直接扱うことはあまりしなさそうだけどとりあえず調べる
+コルーチン内で例外吐いてもコルーチンが止まるだけなので
+~~~
+
+concurrency::cancellation_token_source cts;
+auto token = cts.get_token();
+//トークンを確認してキャンセルを判定する
+//https://docs.microsoft.com/ja-jp/cpp/parallel/concrt/cancellation-in-the-ppl?view=vs-2019	
+//https://github.com/MicrosoftDocs/cpp-docs/issues/60
+auto t = concurrency::create_task(
+	[token]() 
+    {
+        //create_taskでタスクを作成すると同時に実行することができる
+		while (true) {
+			if (token.is_canceled()) {
+				concurrency::cancel_current_task();
+                //タスクをキャンセルしたい場合には明示的に終了させる必要がある ここではbreak;でも終了できる
+			}
+			else {
+
+			}
+			//co_await 1s;
+			//この中でco_awaitすると挙動が怪しくなる
+			return 1;
+		}
+	},
+	token
+);
+//第二引数にtokenを持たせることでキャンセルが可能
+auto t2 = t.then([token](concurrency::task<int> t) {
+	int i = t.get();
+	return i;
+}, token);
+//タスクが終わった時に別のタスクを実行するようにできる 引数のタスクはその終了待ちタスク
+cts.cancel();
+//トークンのソースでキャンセルすることでタスクをキャンセルできる
+//タスクがキャンセルされた場合そのあとのタスク(この場合はt2)は実行されない(statusを確認するとcanceledになっている)
+
+concurrency::task_status = t.wait();
+//タスクがキャンセルされた場合concurrency::task_status::canceled
+//正常終了はconcurrency::task_status::completed
+
+//タスクの結果はt.get()で受け取る
+//t.get()はcanceledの時concurrency::task_canceled例外を吐く
+~~~
+
+### タスクグループでタスク複数同時実行
+~~~
+
+concurrency::structured_task_group tg;
+auto t1 = concurrency::make_task(
+    [] 
+    {
+        for (int i = 0; i < 10000000000; ++i) {
+	        if (concurrency::is_current_task_group_canceling()) {
+		        break;
+			    //concurrency::cancel_current_task()だとconcurrency::task_canceled例外になる
+		    }
+	    }
+    }
+);
+auto t2 = concurrency::make_task(
+    [] 
+    {
+	    for (int i = 0; i < 10000000000; ++i) {
+		    if (concurrency::is_current_task_group_canceling()) {
+			    break;
+		    }
+	    }
+    }
+);
+auto t3 = concurrency::make_task(
+    [] 
+    {
+        for (int i = 0; i < 10000000000; ++i) {
+		    if (concurrency::is_current_task_group_canceling()) {
+			    break;
+		    }
+	    }
+    }
+);
+auto t4 = concurrency::make_task(
+    [&] 
+    {
+	    for (int i = 0; i < 10000000000; ++i) {
+		    if (i > 100) {
+			    tg.cancel();
+		    }
+		    if (concurrency::is_current_task_group_canceling()) {
+			    break;
+		    }
+	    }
+    }
+);
+tg.run(t1);
+tg.run(t2);
+tg.run(t3);
+tg.run(t4);
+tg.wait();
+//Concurrency::details::_Interruption_exception例外がデバッガにでるがこれはpplの内部でスタックを巻き戻すために使われているらしい
+//https://social.microsoft.com/Forums/ja-JP/c8452bcd-898e-450d-8fa7-0ead8cdc2cb8/how-should-i-deal-with-these-exception?forum=winappswithnativecode
+~~~
+
+
+### pplの並列実行アルゴリズム(WinRTで使うときはこっちは直接使うかも)
+並列に値を処理するときは当然mutexを用いる必要がある
+~~~
+int i = 0;
+std::mutex mtx_;
+//0から999までのループ 引数にはループの数値が入る
+concurrency::parallel_for(0, 1000, 
+    [&i,&mtx_] (int value)
+    {
+	    mtx_.lock();
+	    i += 1;
+	    mtx_.unlock();
+    }
+    );
+//i==1000
+~~~
+
+値を全部足すみたいなことをするときはparrallel_reduce使った方がいい
+~~~
+std::vector<int> array{ 1,2,3,4,5 };
+int sum = concurrency::parallel_reduce(array.begin(), array.end(), 0, 
+    [](int acc, int i) 
+    {
+	    return acc + i;
+    }
+);
+//sum==15
+~~~
+
+concurrency_for_each
+並べ替えが無いときはstdのarrayやvectorなどで十分だが要素の並べ替えがある場合はconcurrency::concurrent_vectorなどを使う必要がある
+
+とりあえずそれぞれの要素をそのまま操作する例
+~~~
+std::vector<int> array{ 1,2,3,4,5 };
+concurrency::parallel_for_each(array.begin(), array.end(),
+    [](int& i) 
+	{
+		i *= i;
+	}
+);
+//array=={ 1,4,9,16,25 }
+~~~
